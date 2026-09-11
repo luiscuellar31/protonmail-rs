@@ -52,8 +52,8 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub user_agent: Option<String>,
 
-    /// Open the CAPTCHA in an isolated Chrome window (throwaway profile) instead
-    /// of your default browser; it is closed automatically once verified.
+    /// Solve the CAPTCHA on verify.proton.me in an isolated Chrome window
+    /// (throwaway profile); press Enter once verified and the window is closed.
     #[arg(long, global = true)]
     pub captcha_chrome: bool,
 

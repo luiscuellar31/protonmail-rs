@@ -125,7 +125,8 @@ search         <query> [--limit 25]                                  # query the
 ```
 `<REF>` = exact message ID or free text (unique search match); `<ID>` = exact id. `--json` on any
 command for machine output. CAPTCHA: login auto-opens it; solve via console snippet / bookmarklet,
-or pass `--captcha-token`, or `--captcha-chrome` (isolated, auto-closing window).
+or pass `--captcha-token`, or `--captcha-chrome` (verify.proton.me in an isolated window; press
+Enter once verified and it closes).
 
 ---
 
