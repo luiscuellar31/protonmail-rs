@@ -24,6 +24,16 @@ use tokio::sync::Mutex;
 const DEFAULT_BASE_URL: &str = "https://mail.proton.me/api";
 const DEFAULT_APP_VERSION: &str = "Other";
 
+/// Honest default `User-Agent` identifying this SDK (Proton's official API
+/// libraries always send one, as `ClientName/version (OS)`).
+fn default_user_agent() -> String {
+    format!(
+        "proton-core/{} ({})",
+        env!("CARGO_PKG_VERSION"),
+        std::env::consts::OS
+    )
+}
+
 /// Options for an interactive login.
 pub struct LoginOptions {
     /// Account username (email address).
@@ -32,6 +42,8 @@ pub struct LoginOptions {
     pub password: String,
     /// Optional TOTP code for two-factor authentication.
     pub totp: Option<String>,
+    /// Asked for the TOTP code when the account requires 2FA and `totp` is `None`.
+    pub totp_prompt: Option<crate::auth::TotpPrompt>,
     /// Separate mailbox password for two-password (PasswordMode 2) accounts.
     pub mailbox_password: Option<String>,
     /// Local profile name used to store the session.
@@ -40,7 +52,7 @@ pub struct LoginOptions {
     pub base_url: Option<String>,
     /// Optional app-version string to present to the API.
     pub app_version: Option<String>,
-    /// Optional `User-Agent` to present as a real client.
+    /// Optional `User-Agent`; defaults to `proton-core/<version> (<os>)`.
     pub user_agent: Option<String>,
     /// Optional human-verification (CAPTCHA) resolver, invoked on API code 9001.
     pub hv: Option<crate::transport::HvResolver>,
@@ -81,16 +93,22 @@ impl Client {
             .clone()
             .unwrap_or_else(|| DEFAULT_APP_VERSION.to_string());
         let store: Arc<dyn SecretStore> = Arc::new(KeyringStore::new(opts.profile.clone()));
+        let user_agent = opts.user_agent.clone().unwrap_or_else(default_user_agent);
         let mut http = HttpClient::new(base_url.clone(), app_version.clone());
-        if let Some(ua) = &opts.user_agent {
-            http.set_user_agent(ua.clone()).await;
-        }
+        http.set_user_agent(user_agent.clone()).await;
         if let Some(resolver) = &opts.hv {
             http.set_hv_resolver(resolver.clone());
         }
 
         let password = SecretString::from(opts.password.clone());
-        let login = auth::login(&http, &opts.username, &password, opts.totp.as_deref()).await?;
+        let login = auth::login_with_prompt(
+            &http,
+            &opts.username,
+            &password,
+            opts.totp.as_deref(),
+            opts.totp_prompt.as_ref(),
+        )
+        .await?;
 
         let provider = crypto::provider();
         let salts = api::keys::get_key_salts(&http).await?;
@@ -115,7 +133,7 @@ impl Client {
             app_version,
             base_url: base_url.clone(),
             password_mode: login.password_mode,
-            user_agent: opts.user_agent.clone(),
+            user_agent: Some(user_agent),
         };
         session.save(
             &Paths::system()?,
@@ -148,9 +166,13 @@ impl Client {
             loaded.session.base_url.clone(),
             loaded.session.app_version.clone(),
         );
-        if let Some(ua) = &loaded.session.user_agent {
-            http.set_user_agent(ua.clone()).await;
-        }
+        // Sessions saved before the default existed carry no User-Agent.
+        let user_agent = loaded
+            .session
+            .user_agent
+            .clone()
+            .unwrap_or_else(default_user_agent);
+        http.set_user_agent(user_agent).await;
         let Tokens {
             uid,
             access,
@@ -198,5 +220,22 @@ impl Client {
         };
         self.sender_cache.lock().await.insert(key, pubs.clone());
         pubs
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_user_agent_names_sdk_version_and_os() {
+        assert_eq!(
+            default_user_agent(),
+            format!(
+                "proton-core/{} ({})",
+                crate::version(),
+                std::env::consts::OS
+            )
+        );
     }
 }

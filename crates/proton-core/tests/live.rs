@@ -36,6 +36,7 @@ async fn login(c: &Creds) -> Client {
         username: c.user.clone(),
         password: c.pass.clone(),
         totp: c.totp.clone(),
+        totp_prompt: None,
         mailbox_password: c.mailbox.clone(),
         profile: "live-test".into(),
         base_url: std::env::var("PROTON_TEST_API_URL").ok(),

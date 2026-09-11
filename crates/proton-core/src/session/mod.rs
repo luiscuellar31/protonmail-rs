@@ -203,7 +203,7 @@ mod tests {
             app_version: "Other".into(),
             base_url: "https://mail.proton.me/api".into(),
             password_mode: 1,
-            user_agent: None,
+            user_agent: Some("protonmail-cli/0.1.1 (macos)".into()),
         };
         let tokens = Tokens {
             uid: "UID1".into(),
@@ -222,6 +222,10 @@ mod tests {
         let loaded = Session::load(&paths, "default", &store).unwrap().unwrap();
         assert_eq!(loaded.session.uid, "UID1");
         assert_eq!(loaded.session.app_version, "Other");
+        assert_eq!(
+            loaded.session.user_agent.as_deref(),
+            Some("protonmail-cli/0.1.1 (macos)")
+        );
         assert_eq!(loaded.tokens.access.expose_secret(), "acc");
         assert_eq!(loaded.skp.expose_secret(), "skp-secret");
 
