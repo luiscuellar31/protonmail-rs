@@ -109,7 +109,7 @@ fn verify_url(chal: &HvChallenge) -> String {
 /// and wait (bounded) for the user to confirm completion with ENTER.
 fn run_external_flow(url: &str) -> Result<()> {
     eprintln!("\n── Human verification (CAPTCHA) ──");
-    let mut child = match launch_chrome(url, &std::process::id().to_string()) {
+    let mut chrome = match launch_chrome(url, &std::process::id().to_string()) {
         Ok(c) => {
             eprintln!("Opened the verification page in an isolated Chrome window.");
             Some(c)
@@ -129,15 +129,17 @@ fn run_external_flow(url: &str) -> Result<()> {
     );
 
     let outcome = wait_for_confirmation(&spawn_enter_reader(), HV_TIMEOUT, || {
-        child
+        chrome
             .as_mut()
-            .is_some_and(|c| matches!(c.try_wait(), Ok(Some(_))))
+            .is_some_and(|(c, _)| matches!(c.try_wait(), Ok(Some(_))))
     });
 
-    // Close the isolated Chrome window we opened (if any).
-    if let Some(mut c) = child {
+    // Close the isolated Chrome window we opened (if any), then remove its
+    // throwaway profile. Best effort: a leftover only wastes temp space.
+    if let Some((mut c, profile)) = chrome {
         let _ = c.kill();
         let _ = c.wait();
+        let _ = std::fs::remove_dir_all(&profile);
     }
     if outcome.is_ok() {
         eprintln!("Verification confirmed — retrying.");
@@ -412,11 +414,20 @@ fn open_browser(url: &str) -> std::io::Result<()> {
     cmd.spawn().map(|_| ())
 }
 
+/// Throwaway Chrome profile used only by protonmail-cli (never a user profile).
+fn chrome_profile_dir(tag: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("protonmail-cli-hv-{tag}"))
+}
+
 /// Open `url` in an isolated Chrome window (throwaway profile named by `tag`).
-/// Returns the child process so it can be closed once verification completes.
-fn launch_chrome(url: &str, tag: &str) -> std::result::Result<std::process::Child, String> {
+/// Returns the child process and its profile dir so both can be cleaned up
+/// once verification completes.
+fn launch_chrome(
+    url: &str,
+    tag: &str,
+) -> std::result::Result<(std::process::Child, PathBuf), String> {
     let chrome = find_chrome().ok_or_else(|| "no Chrome/Chromium binary found".to_string())?;
-    let profile: PathBuf = std::env::temp_dir().join(format!("protonmail-cli-hv-{tag}"));
+    let profile = chrome_profile_dir(tag);
     std::process::Command::new(&chrome)
         .arg(format!("--user-data-dir={}", profile.display()))
         .arg("--no-first-run")
@@ -425,6 +436,7 @@ fn launch_chrome(url: &str, tag: &str) -> std::result::Result<std::process::Chil
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
+        .map(|child| (child, profile))
         .map_err(|e| format!("spawn {chrome}: {e}"))
 }
 
@@ -577,6 +589,13 @@ mod tests {
         assert_eq!(handle_conn(&mut stream).as_deref(), Some("synthetic"));
         drop(stream); // EOF for the client's read_to_string
         client.join().unwrap();
+    }
+
+    #[test]
+    fn chrome_profile_dir_is_a_dedicated_temp_dir() {
+        let dir = chrome_profile_dir("123");
+        assert_eq!(dir.parent(), Some(std::env::temp_dir().as_path()));
+        assert_eq!(dir.file_name().unwrap(), "protonmail-cli-hv-123");
     }
 
     fn chal(token: &str, web_url: &str) -> HvChallenge {
