@@ -32,7 +32,6 @@ pub async fn login(ctx: &Ctx) -> Result<()> {
         username,
         password,
         totp: ctx.totp.clone(),
-        totp_prompt: Some(totp_prompt()),
         mailbox_password: ctx.mailbox_password.clone(),
         profile: ctx.profile.clone(),
         base_url: ctx.api_url.clone(),
@@ -47,7 +46,7 @@ pub async fn login(ctx: &Ctx) -> Result<()> {
         )),
     };
 
-    let client = Client::login(opts).await?;
+    let client = Client::login_with_totp_prompt(opts, totp_prompt()).await?;
     let email = client.primary_email().unwrap_or("(unknown)");
     if ctx.json {
         render::json_out(&json!({ "status": "ok", "email": email }));

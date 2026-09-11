@@ -244,6 +244,36 @@ mod tests {
     }
 
     #[test]
+    fn session_without_user_agent_round_trips_unchanged() {
+        let paths = Paths::with_base(unique_base());
+        let store = MemoryStore::new();
+        let s = Session {
+            uid: "UID2".into(),
+            app_version: "Other".into(),
+            base_url: "https://mail.proton.me/api".into(),
+            password_mode: 1,
+            user_agent: None,
+        };
+        let tokens = Tokens {
+            uid: "UID2".into(),
+            access: SecretString::from("acc"),
+            refresh: SecretString::from("ref"),
+        };
+        s.save(
+            &paths,
+            "default",
+            &store,
+            &tokens,
+            &SecretString::from("skp"),
+        )
+        .unwrap();
+
+        let loaded = Session::load(&paths, "default", &store).unwrap().unwrap();
+        assert_eq!(loaded.session.user_agent, None);
+        Session::clear(&paths, "default", &store).unwrap();
+    }
+
+    #[test]
     fn load_missing_returns_none() {
         let paths = Paths::with_base(unique_base());
         let store = MemoryStore::new();

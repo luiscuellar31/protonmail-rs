@@ -11,7 +11,7 @@ pub mod send;
 pub mod sync;
 
 use crate::api;
-use crate::auth;
+use crate::auth::{self, TotpPrompt};
 use crate::crypto::{self, keys::KeyStore};
 use crate::error::{Error, Result};
 use crate::session::{KeyringStore, Paths, SecretStore, Session, Tokens};
@@ -24,16 +24,6 @@ use tokio::sync::Mutex;
 const DEFAULT_BASE_URL: &str = "https://mail.proton.me/api";
 const DEFAULT_APP_VERSION: &str = "Other";
 
-/// Honest default `User-Agent` identifying this SDK (Proton's official API
-/// libraries always send one, as `ClientName/version (OS)`).
-fn default_user_agent() -> String {
-    format!(
-        "proton-core/{} ({})",
-        env!("CARGO_PKG_VERSION"),
-        std::env::consts::OS
-    )
-}
-
 /// Options for an interactive login.
 pub struct LoginOptions {
     /// Account username (email address).
@@ -42,8 +32,6 @@ pub struct LoginOptions {
     pub password: String,
     /// Optional TOTP code for two-factor authentication.
     pub totp: Option<String>,
-    /// Asked for the TOTP code when the account requires 2FA and `totp` is `None`.
-    pub totp_prompt: Option<crate::auth::TotpPrompt>,
     /// Separate mailbox password for two-password (PasswordMode 2) accounts.
     pub mailbox_password: Option<String>,
     /// Local profile name used to store the session.
@@ -52,7 +40,7 @@ pub struct LoginOptions {
     pub base_url: Option<String>,
     /// Optional app-version string to present to the API.
     pub app_version: Option<String>,
-    /// Optional `User-Agent`; defaults to `proton-core/<version> (<os>)`.
+    /// Optional `User-Agent` to present as a real client.
     pub user_agent: Option<String>,
     /// Optional human-verification (CAPTCHA) resolver, invoked on API code 9001.
     pub hv: Option<crate::transport::HvResolver>,
@@ -84,6 +72,21 @@ impl Client {
 
     /// Interactive login: SRP + 2FA, unlock keys, persist session.
     pub async fn login(opts: LoginOptions) -> Result<Client> {
+        Self::login_inner(opts, None).await
+    }
+
+    /// Like [`Client::login`], but calls `totp_prompt` for the code when the
+    /// account requires TOTP and `opts.totp` is `None`. The prompt runs after
+    /// any human verification (so the code is fresh) and never runs for
+    /// accounts without TOTP.
+    pub async fn login_with_totp_prompt(
+        opts: LoginOptions,
+        totp_prompt: TotpPrompt,
+    ) -> Result<Client> {
+        Self::login_inner(opts, Some(totp_prompt)).await
+    }
+
+    async fn login_inner(opts: LoginOptions, totp_prompt: Option<TotpPrompt>) -> Result<Client> {
         let base_url = opts
             .base_url
             .clone()
@@ -93,9 +96,10 @@ impl Client {
             .clone()
             .unwrap_or_else(|| DEFAULT_APP_VERSION.to_string());
         let store: Arc<dyn SecretStore> = Arc::new(KeyringStore::new(opts.profile.clone()));
-        let user_agent = opts.user_agent.clone().unwrap_or_else(default_user_agent);
         let mut http = HttpClient::new(base_url.clone(), app_version.clone());
-        http.set_user_agent(user_agent.clone()).await;
+        if let Some(ua) = &opts.user_agent {
+            http.set_user_agent(ua.clone()).await;
+        }
         if let Some(resolver) = &opts.hv {
             http.set_hv_resolver(resolver.clone());
         }
@@ -106,7 +110,7 @@ impl Client {
             &opts.username,
             &password,
             opts.totp.as_deref(),
-            opts.totp_prompt.as_ref(),
+            totp_prompt.as_ref(),
         )
         .await?;
 
@@ -133,7 +137,7 @@ impl Client {
             app_version,
             base_url: base_url.clone(),
             password_mode: login.password_mode,
-            user_agent: Some(user_agent),
+            user_agent: opts.user_agent.clone(),
         };
         session.save(
             &Paths::system()?,
@@ -166,13 +170,9 @@ impl Client {
             loaded.session.base_url.clone(),
             loaded.session.app_version.clone(),
         );
-        // Sessions saved before the default existed carry no User-Agent.
-        let user_agent = loaded
-            .session
-            .user_agent
-            .clone()
-            .unwrap_or_else(default_user_agent);
-        http.set_user_agent(user_agent).await;
+        if let Some(ua) = &loaded.session.user_agent {
+            http.set_user_agent(ua.clone()).await;
+        }
         let Tokens {
             uid,
             access,
@@ -227,15 +227,23 @@ impl Client {
 mod tests {
     use super::*;
 
+    /// `LoginOptions` keeps its upstream shape and both entry points accept it.
+    /// The futures are never polled, so nothing touches the network.
     #[test]
-    fn default_user_agent_names_sdk_version_and_os() {
-        assert_eq!(
-            default_user_agent(),
-            format!(
-                "proton-core/{} ({})",
-                crate::version(),
-                std::env::consts::OS
-            )
-        );
+    fn login_entry_points_accept_upstream_login_options() {
+        let opts = || LoginOptions {
+            username: "user@example.com".into(),
+            password: "not-a-real-password".into(),
+            totp: None,
+            mailbox_password: None,
+            profile: "test".into(),
+            base_url: None,
+            app_version: None,
+            user_agent: None,
+            hv: None,
+        };
+        let prompt: TotpPrompt = Arc::new(|| Box::pin(async { Ok("000000".to_string()) }));
+        drop(Client::login(opts()));
+        drop(Client::login_with_totp_prompt(opts(), prompt));
     }
 }

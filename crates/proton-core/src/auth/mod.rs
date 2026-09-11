@@ -11,8 +11,11 @@ use secrecy::{ExposeSecret, SecretString};
 use std::sync::Arc;
 use types::{AuthInfo, AuthResponse, SessionResp};
 
-/// Asks the user for a TOTP code. Invoked only when the account requires 2FA
-/// and no code was supplied up front, so the code is fresh (e.g. after a CAPTCHA).
+/// Asks the user for a TOTP code during login.
+///
+/// Called only when the account requires TOTP and no code was supplied up
+/// front, after any human verification, so the code is still fresh. Obtain the
+/// code interactively and do not persist it.
 pub type TotpPrompt = Arc<dyn Fn() -> BoxFuture<'static, Result<String>> + Send + Sync>;
 
 /// Result of a successful login.
@@ -257,6 +260,19 @@ mod tests {
         let http = HttpClient::new(server.uri(), "Other");
         let err = second_factor(&http, 1, None, None).await.unwrap_err();
         assert!(err.to_string().contains("no TOTP code"));
+    }
+
+    #[tokio::test]
+    async fn second_factor_rejects_fido2_only_without_prompting() {
+        let server = MockServer::start().await;
+        let http = HttpClient::new(server.uri(), "Other");
+        let (prompt, calls) = counting_prompt("222222");
+        let err = second_factor(&http, 2, None, Some(&prompt))
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("FIDO2"));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 
     #[tokio::test]
