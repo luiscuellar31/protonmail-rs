@@ -2,6 +2,7 @@
 
 use proton_core::api;
 use proton_core::api::messages::ListQuery;
+use proton_core::model::enums::resolve_folder;
 use proton_core::transport::HttpClient;
 use wiremock::matchers::{body_json, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -129,4 +130,38 @@ async fn recipient_keys_lookup() {
     assert_eq!(rk.recipient_type, 1);
     assert_eq!(rk.keys.len(), 1);
     assert_eq!(rk.keys[0].flags, 3);
+}
+
+#[tokio::test]
+async fn a_label_id_reaches_the_wire_as_it_was_given() {
+    // A folder or label the account made is addressed by its own ID, which is
+    // case-sensitive. The mock only answers the exact one, so a query that
+    // arrives folded to lower case gets no match and the call fails.
+    let id = "qBIcv1_Wv5X4hLpEo0Tz9A==";
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/mail/v4/conversations"))
+        .and(query_param("LabelID", id))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+            "Code": 1000,
+            "Total": 0,
+            "Conversations": []
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    // The query Client::list_conversations builds for that folder.
+    let q = ListQuery {
+        label_id: Some(resolve_folder(id)),
+        page: Some(0),
+        page_size: Some(50),
+        ..Default::default()
+    };
+    let (total, conversations) = api::conversations::list_conversations(&client(&server.uri()), &q)
+        .await
+        .expect("the label was addressed as Proton named it");
+
+    assert_eq!(total, 0);
+    assert!(conversations.is_empty());
 }

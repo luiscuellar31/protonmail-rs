@@ -46,7 +46,10 @@ pub fn resolve_folder(name: &str) -> String {
         "all" | "all-mail" | "allmail" => label_ids::ALL_MAIL,
         "scheduled" => label_ids::SCHEDULED,
         "snoozed" => label_ids::SNOOZED,
-        other => return other.to_string(),
+        // The name is matched folded, but an unknown one is returned as it
+        // was given: Proton's IDs are case-sensitive, so folding one names a
+        // label that does not exist.
+        _ => return name.trim().to_string(),
     }
     .to_string()
 }
@@ -170,6 +173,19 @@ mod tests {
         assert_eq!(resolve_folder("starred"), "10");
         assert_eq!(resolve_folder("all"), "5");
         assert_eq!(resolve_folder("xyz123"), "xyz123");
+    }
+
+    #[test]
+    fn a_raw_label_id_passes_through_unchanged() {
+        // Proton's IDs are case-sensitive base64url, so folding one to lower
+        // case names a label that does not exist. Only all-lowercase IDs used
+        // to survive, which is why listing a folder or label the account made
+        // came back empty.
+        let id = "qBIcv1_Wv5X4hLpEo0Tz9A==";
+        assert_eq!(resolve_folder(id), id);
+
+        // A name is still recognised however it is typed or spaced.
+        assert_eq!(resolve_folder("  Archive  "), label_ids::ARCHIVE);
     }
 
     #[test]
