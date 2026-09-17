@@ -282,10 +282,10 @@ mod tests {
         assert!(cache.get("sender-1@example.com").is_none());
     }
 
-    /// `LoginOptions` keeps its upstream shape and both entry points accept it.
+    /// Both login entry points accept credentials wrapped as secrets.
     /// The futures are never polled, so nothing touches the network.
     #[test]
-    fn login_entry_points_accept_upstream_login_options() {
+    fn login_entry_points_accept_secret_options() {
         let opts = || LoginOptions {
             username: "user@example.com".into(),
             password: SecretString::from("not-a-real-password"),
