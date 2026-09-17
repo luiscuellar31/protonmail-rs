@@ -16,7 +16,7 @@ use types::{AuthInfo, AuthResponse, SessionResp};
 /// Called only when the account requires TOTP and no code was supplied up
 /// front, after any human verification, so the code is still fresh. Obtain the
 /// code interactively and do not persist it.
-pub type TotpPrompt = Arc<dyn Fn() -> BoxFuture<'static, Result<String>> + Send + Sync>;
+pub type TotpPrompt = Arc<dyn Fn() -> BoxFuture<'static, Result<SecretString>> + Send + Sync>;
 
 /// Result of a successful login.
 pub struct LoginResult {
@@ -159,9 +159,13 @@ async fn second_factor(
     if enabled & 1 == 0 {
         return Ok(());
     }
+    let prompted_code;
     let code = match (totp, totp_prompt) {
-        (Some(code), _) => code.to_string(),
-        (None, Some(prompt)) => prompt().await?,
+        (Some(code), _) => code,
+        (None, Some(prompt)) => {
+            prompted_code = prompt().await?;
+            prompted_code.expose_secret()
+        }
         (None, None) => {
             return Err(Error::Other(
                 "account requires 2FA but no TOTP code was provided".into(),
@@ -214,7 +218,7 @@ mod tests {
         let seen = calls.clone();
         let prompt: TotpPrompt = Arc::new(move || {
             seen.fetch_add(1, Ordering::SeqCst);
-            Box::pin(async move { Ok(code.to_string()) })
+            Box::pin(async move { Ok(SecretString::from(code)) })
         });
         (prompt, calls)
     }

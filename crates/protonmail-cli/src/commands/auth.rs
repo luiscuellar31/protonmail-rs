@@ -4,6 +4,7 @@ use crate::cli::{ClientPreset, Ctx};
 use crate::commands::{prompt_line, resume};
 use crate::render;
 use proton_core::{Client, Error, LoginOptions, Result, TotpPrompt};
+use secrecy::SecretString;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -30,9 +31,9 @@ pub async fn login(ctx: &Ctx) -> Result<()> {
 
     let opts = LoginOptions {
         username,
-        password,
-        totp: ctx.totp.clone(),
-        mailbox_password: ctx.mailbox_password.clone(),
+        password: SecretString::from(password),
+        totp: ctx.totp.clone().map(SecretString::from),
+        mailbox_password: ctx.mailbox_password.clone().map(SecretString::from),
         profile: ctx.profile.clone(),
         base_url: ctx.api_url.clone(),
         app_version,
@@ -79,7 +80,7 @@ fn totp_prompt() -> TotpPrompt {
                 tokio::task::spawn_blocking(|| rpassword::prompt_password("Proton 2FA code: "))
                     .await
                     .map_err(|e| Error::Other(format!("2FA prompt: {e}")))??;
-            Ok(code.trim().to_string())
+            Ok(SecretString::from(code))
         })
     })
 }

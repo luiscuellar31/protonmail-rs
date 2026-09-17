@@ -12,6 +12,7 @@
 //! ```
 
 use proton_core::{Client, LoginOptions, SendOptions};
+use secrecy::SecretString;
 
 struct Creds {
     user: String,
@@ -34,9 +35,9 @@ fn creds() -> Option<Creds> {
 async fn login(c: &Creds) -> Client {
     Client::login(LoginOptions {
         username: c.user.clone(),
-        password: c.pass.clone(),
-        totp: c.totp.clone(),
-        mailbox_password: c.mailbox.clone(),
+        password: SecretString::from(c.pass.clone()),
+        totp: c.totp.clone().map(SecretString::from),
+        mailbox_password: c.mailbox.clone().map(SecretString::from),
         profile: "live-test".into(),
         base_url: std::env::var("PROTON_TEST_API_URL").ok(),
         app_version: std::env::var("PROTON_TEST_APP_VERSION").ok(),

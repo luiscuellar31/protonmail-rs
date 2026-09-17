@@ -16,7 +16,7 @@ use crate::crypto::{self, keys::KeyStore};
 use crate::error::{Error, Result};
 use crate::session::{KeyringStore, Paths, SecretStore, Session, Tokens};
 use crate::transport::HttpClient;
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -29,11 +29,11 @@ pub struct LoginOptions {
     /// Account username (email address).
     pub username: String,
     /// Account password.
-    pub password: String,
+    pub password: SecretString,
     /// Optional TOTP code for two-factor authentication.
-    pub totp: Option<String>,
+    pub totp: Option<SecretString>,
     /// Separate mailbox password for two-password (PasswordMode 2) accounts.
-    pub mailbox_password: Option<String>,
+    pub mailbox_password: Option<SecretString>,
     /// Local profile name used to store the session.
     pub profile: String,
     /// Optional API base URL override.
@@ -104,12 +104,11 @@ impl Client {
             http.set_hv_resolver(resolver.clone());
         }
 
-        let password = SecretString::from(opts.password.clone());
         let login = auth::login_with_prompt(
             &http,
             &opts.username,
-            &password,
-            opts.totp.as_deref(),
+            &opts.password,
+            opts.totp.as_ref().map(ExposeSecret::expose_secret),
             totp_prompt.as_ref(),
         )
         .await?;
@@ -120,17 +119,17 @@ impl Client {
         let addresses = api::keys::get_addresses(&http).await?;
 
         let mailbox_pw = if login.password_mode == 2 {
-            SecretString::from(opts.mailbox_password.clone().ok_or_else(|| {
+            opts.mailbox_password.as_ref().ok_or_else(|| {
                 Error::Other(
                     "this account uses a separate mailbox password (PasswordMode 2); supply --mailbox-password".into(),
                 )
-            })?)
+            })?
         } else {
-            password.clone()
+            &opts.password
         };
 
         tracing::debug!(target: "proton_core::mail", addresses = addresses.len(), password_mode = login.password_mode, "login: fetched salts + user + addresses; unlocking keys");
-        let (keys, skp) = crypto::keys::unlock(&provider, &user, &addresses, &mailbox_pw, &salts)?;
+        let (keys, skp) = crypto::keys::unlock(&provider, &user, &addresses, mailbox_pw, &salts)?;
 
         let session = Session {
             uid: login.tokens.uid.clone(),
@@ -233,7 +232,7 @@ mod tests {
     fn login_entry_points_accept_upstream_login_options() {
         let opts = || LoginOptions {
             username: "user@example.com".into(),
-            password: "not-a-real-password".into(),
+            password: SecretString::from("not-a-real-password"),
             totp: None,
             mailbox_password: None,
             profile: "test".into(),
@@ -242,7 +241,7 @@ mod tests {
             user_agent: None,
             hv: None,
         };
-        let prompt: TotpPrompt = Arc::new(|| Box::pin(async { Ok("000000".to_string()) }));
+        let prompt: TotpPrompt = Arc::new(|| Box::pin(async { Ok(SecretString::from("000000")) }));
         drop(Client::login(opts()));
         drop(Client::login_with_totp_prompt(opts(), prompt));
     }
