@@ -17,12 +17,46 @@ use crate::error::{Error, Result};
 use crate::session::{KeyringStore, Paths, SecretStore, Session, Tokens};
 use crate::transport::HttpClient;
 use secrecy::{ExposeSecret, SecretString};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
 const DEFAULT_BASE_URL: &str = "https://mail.proton.me/api";
 const DEFAULT_APP_VERSION: &str = "Other";
+const SENDER_KEY_CACHE_CAPACITY: usize = 256;
+
+#[derive(Default)]
+struct SenderKeyCache {
+    entries: HashMap<String, Vec<String>>,
+    recency: VecDeque<String>,
+}
+
+impl SenderKeyCache {
+    fn get(&mut self, key: &str) -> Option<Vec<String>> {
+        let value = self.entries.get(key)?.clone();
+        if let Some(index) = self.recency.iter().position(|cached| cached == key) {
+            self.recency.remove(index);
+        }
+        self.recency.push_back(key.to_owned());
+        Some(value)
+    }
+
+    fn insert(&mut self, key: String, value: Vec<String>) {
+        // A missing key may appear later; do not retain negative lookups.
+        if value.is_empty() {
+            return;
+        }
+        if let Some(index) = self.recency.iter().position(|cached| cached == &key) {
+            self.recency.remove(index);
+        } else if self.entries.len() == SENDER_KEY_CACHE_CAPACITY {
+            if let Some(oldest) = self.recency.pop_front() {
+                self.entries.remove(&oldest);
+            }
+        }
+        self.recency.push_back(key.clone());
+        self.entries.insert(key, value);
+    }
+}
 
 /// Options for an interactive login.
 pub struct LoginOptions {
@@ -53,7 +87,7 @@ pub struct Client {
     paths: Paths,
     profile: String,
     store: Arc<dyn SecretStore>,
-    sender_cache: Mutex<HashMap<String, Vec<String>>>,
+    sender_cache: Mutex<SenderKeyCache>,
 }
 
 impl Client {
@@ -153,7 +187,7 @@ impl Client {
             paths: Paths::system()?,
             profile: opts.profile,
             store,
-            sender_cache: Mutex::new(HashMap::new()),
+            sender_cache: Mutex::new(SenderKeyCache::default()),
         })
     }
 
@@ -191,7 +225,7 @@ impl Client {
             paths,
             profile: profile.to_string(),
             store,
-            sender_cache: Mutex::new(HashMap::new()),
+            sender_cache: Mutex::new(SenderKeyCache::default()),
         })
     }
 
@@ -210,8 +244,8 @@ impl Client {
     /// Fetch (and cache) a sender's armored public keys for verification.
     pub(crate) async fn sender_pubkeys(&self, email: &str) -> Vec<String> {
         let key = email.to_ascii_lowercase();
-        if let Some(v) = self.sender_cache.lock().await.get(&key) {
-            return v.clone();
+        if let Some(keys) = self.sender_cache.lock().await.get(&key) {
+            return keys;
         }
         let pubs = match api::keys::get_all_public_keys(&self.http, email).await {
             Ok(r) => r.keys.into_iter().map(|k| k.public_key).collect(),
@@ -225,6 +259,28 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sender_key_cache_is_lru_bounded_and_skips_negative_results() {
+        let mut cache = SenderKeyCache::default();
+        cache.insert("missing@example.com".into(), Vec::new());
+        assert!(cache.get("missing@example.com").is_none());
+
+        for index in 0..SENDER_KEY_CACHE_CAPACITY {
+            cache.insert(
+                format!("sender-{index}@example.com"),
+                vec![index.to_string()],
+            );
+        }
+        assert_eq!(cache.entries.len(), SENDER_KEY_CACHE_CAPACITY);
+
+        assert!(cache.get("sender-0@example.com").is_some());
+        cache.insert("new@example.com".into(), vec!["key".into()]);
+
+        assert_eq!(cache.entries.len(), SENDER_KEY_CACHE_CAPACITY);
+        assert!(cache.get("sender-0@example.com").is_some());
+        assert!(cache.get("sender-1@example.com").is_none());
+    }
 
     /// `LoginOptions` keeps its upstream shape and both entry points accept it.
     /// The futures are never polled, so nothing touches the network.
